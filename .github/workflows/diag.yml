@@ -1,0 +1,17 @@
+name: diag puzzel
+on:
+  push:
+    branches: [diag-puzzel]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA='Driftsradar/1.0 (+https://github.com/MadsFJ/Driftsradar)'
+          for u in https://status.puzzel.com/ https://status.puzzel.com/api/v2/summary.json https://status.puzzel.com/api/v2/status.json https://status.puzzel.com/history.rss https://status.puzzel.com/history.atom https://status.puzzel.com/feed.rss https://status.puzzel.com/feed.atom https://status.puzzel.com/rss https://status.puzzel.com/feed https://status.puzzel.com/summary.json https://status.puzzel.com/index.json; do
+            echo "=================== $u"
+            curl -sS -L -A "$UA" -D - -o body.txt --max-time 20 "$u" | grep -iE '^(HTTP|content-type|location|server|x-)' || true
+            echo "--- first 1500 bytes:"; head -c 1500 body.txt; echo
+          done
+          echo "=========== links in homepage"
+          curl -sS -L -A "$UA" https://status.puzzel.com/ | grep -oiE '(href|src)="[^"]+"' | sort -u | head -80
