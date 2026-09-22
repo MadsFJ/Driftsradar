@@ -207,18 +207,19 @@
       <legend>Status-kilde</legend>
       <label>Statusside-URL
         <input name="statusUrl" type="url" placeholder="https://status.eksempel.com">
-        <span class="hint">Offentlig statusside. Mange (Atlassian Statuspage) kan hentes automatisk.</span>
+        <span class="hint">Offentlig statusside. Mange (Atlassian Statuspage) kan hentes automatisk. Status.io-sider (fx Puzzel) kræver API-URL'en med sidens id.</span>
       </label>
       <div class="row">
         <label>Type
           <select name="statusType">
             <option value="statuspage">Statuspage (JSON-API)</option>
+            <option value="statusio">Status.io (JSON-API)</option>
             <option value="rss">RSS/Atom-feed</option>
             <option value="none">Kun link (hent ikke)</option>
           </select>
         </label>
-        <label>Feed-URL (kun RSS)
-          <input name="feedUrl" type="url" placeholder="https://…/feed">
+        <label>Feed-/API-URL (RSS eller Status.io)
+          <input name="feedUrl" type="url" placeholder="https://…/feed eller https://api.status.io/1.0/status/…">
         </label>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -305,7 +306,8 @@
   const DEFAULT_SERVICES = [
     {
       name: 'Puzzel', category: 'Kundeservice / telefoni',
-      statusType: 'statuspage', statusUrl: 'https://status.puzzel.com',
+      statusType: 'statusio', statusUrl: 'https://status.puzzel.com',
+      feedUrl: 'https://api.status.io/1.0/status/58207f2bf02471510e000303',
       adminUrl: 'https://admin.puzzel.com',
       notes: 'Contact center / telefoni-løsning.'
     },
@@ -341,7 +343,17 @@
   };
   const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const withIds = list => list.map(s => ({ id: uid(), ...s }));
-  const storedServices = load(STORE_KEY, null);
+  // Puzzel bruger Status.io, ikke Atlassian Statuspage. Retter lister, der er gemt i browseren
+  // fra før, så de ikke bliver ved med at spørge efter et Statuspage-API, der ikke findes.
+  const STATUSIO_PAGES = { 'https://status.puzzel.com': '58207f2bf02471510e000303' };
+  const migrate = s => {
+    let origin = '';
+    try { origin = new URL(s.statusUrl).origin; } catch (e) { /* ugyldig URL */ }
+    return s.statusType === 'statuspage' && STATUSIO_PAGES[origin]
+      ? { ...s, statusType: 'statusio', feedUrl: 'https://api.status.io/1.0/status/' + STATUSIO_PAGES[origin] }
+      : s;
+  };
+  const storedServices = load(STORE_KEY, null)?.map?.(migrate) || null;
 
   const state = {
     services: storedServices || [],
@@ -462,6 +474,51 @@
     };
   }
 
+  // Status.io (fx Puzzel): https://api.status.io/1.0/status/<side-id>
+  // Statuskoder: 100 kører, 200 planlagt vedligehold, 300 nedsat ydelse,
+  // 400 delvise forstyrrelser, 500 driftsforstyrrelse, 600 sikkerhedshændelse.
+  const STATUSIO = {
+    100: ['ok', 'Alt kører'], 200: ['maint', 'Planlagt vedligeholdelse'], 300: ['warn', 'Nedsat ydelse'],
+    400: ['warn', 'Delvise forstyrrelser'], 500: ['bad', 'Driftsforstyrrelse'], 600: ['bad', 'Sikkerhedshændelse']
+  };
+  async function fetchStatusio(svc) {
+    if (!safeUrl(svc.feedUrl)) throw new Error('Mangler Status.io API-URL');
+    const res = await fetchSmart(svc.feedUrl);
+    const data = JSON.parse(res.text).result;
+    if (!data?.status_overall) throw new Error('Svaret ligner ikke et Status.io-API');
+    const pageId = svc.feedUrl.replace(/\/+$/, '').split('/').pop();
+    const pageBase = (baseOf(svc.statusUrl) || 'https://status.io') + '/pages/';
+    const newest = msgs => (msgs || []).reduce((a, m) => !a || new Date(m.datetime) > new Date(a.datetime) ? m : a, null);
+    const incidents = (data.incidents || []).map(i => {
+      const last = newest(i.messages);
+      return {
+        title: i.name,
+        meta: [last?.state, fmtDate(last?.datetime || i.datetime_open)].filter(Boolean).join(' · '),
+        text: truncate(stripHtml(last?.details || ''), 220),
+        link: i._id ? pageBase + 'incident/' + pageId + '/' + i._id : ''
+      };
+    });
+    const maint = (list, active) => (list || []).map(m => ({
+      title: m.name,
+      meta: (active ? 'I gang · ' : 'Planlagt · ') + fmtDate(m.datetime_planned_start) + (m.datetime_planned_end ? ' – ' + fmtDate(m.datetime_planned_end) : ''),
+      link: m._id ? pageBase + 'maintenance/' + pageId + '/' + m._id : ''
+    }));
+    const maintenance = [...maint(data.maintenance?.active, true), ...maint(data.maintenance?.upcoming, false)];
+    const components = (data.status || [])
+      .filter(g => g.status_code !== 100)
+      .map(g => ({
+        title: g.name,
+        meta: STATUSIO[g.status_code]?.[1] || g.status,
+        text: (g.containers || []).filter(c => c.status_code !== 100).map(c => c.name).join(', ')
+      }));
+    const [level, text] = STATUSIO[data.status_overall.status_code] || ['unknown', data.status_overall.status || 'Ukendt'];
+    return {
+      level, text, incidents, maintenance, components,
+      updated: data.status_overall.updated || null,
+      via: res.via, viaAt: res.at, stale: res.stale
+    };
+  }
+
   async function fetchFeed(svc) {
     const url = svc.feedUrl || svc.statusUrl;
     if (!safeUrl(url)) throw new Error('Mangler feed-URL');
@@ -498,7 +555,9 @@
     state.loading.add(svc.id);
     renderCard(svc.id);
     try {
-      const r = svc.statusType === 'rss' ? await fetchFeed(svc) : await fetchStatuspage(svc);
+      const r = svc.statusType === 'rss' ? await fetchFeed(svc)
+        : svc.statusType === 'statusio' ? await fetchStatusio(svc)
+        : await fetchStatuspage(svc);
       state.results[svc.id] = { ...r, fetched: new Date().toISOString() };
     } catch (e) {
       const prev = state.results[svc.id];
@@ -661,7 +720,7 @@
     return list.map(s => {
       const o = { id: s.id || uid() };
       FIELDS.forEach(f => { if (s[f] != null) o[f] = String(s[f]); });
-      return o;
+      return migrate(o);
     });
   }
 

@@ -6,8 +6,9 @@
       "id": "puzzel",
       "name": "Puzzel",
       "category": "Kundeservice / telefoni",
-      "statusType": "statuspage",
+      "statusType": "statusio",
       "statusUrl": "https://status.puzzel.com",
+      "feedUrl": "https://api.status.io/1.0/status/58207f2bf02471510e000303",
       "adminUrl": "https://admin.puzzel.com",
       "notes": "Contact center / telefoni-løsning."
     },

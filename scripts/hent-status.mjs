@@ -12,11 +12,12 @@ const outFile = process.argv[2] || path.join(root, 'status.json');
 const TIMEOUT_MS = 20000;
 const MAX_BYTES = 2_000_000;
 
-// Samme URL'er som siden selv beder om (se fetchStatuspage/fetchFeed i index.html).
+// Samme URL'er som siden selv beder om (se fetchStatuspage/fetchStatusio/fetchFeed i index.html).
 function urlFor(svc) {
   if (svc.statusType === 'statuspage') {
     try { return new URL(svc.statusUrl).origin + '/api/v2/summary.json'; } catch { return null; }
   }
+  if (svc.statusType === 'statusio') return svc.feedUrl || null;
   if (svc.statusType === 'rss') return svc.feedUrl || svc.statusUrl || null;
   return null;
 }
@@ -26,6 +27,10 @@ function validate(svc, body) {
   if (svc.statusType === 'statuspage') {
     try { if (JSON.parse(body).status) return null; } catch { /* falder igennem */ }
     return 'Svaret er ikke et Statuspage-API';
+  }
+  if (svc.statusType === 'statusio') {
+    try { if (JSON.parse(body).result?.status_overall) return null; } catch { /* falder igennem */ }
+    return 'Svaret er ikke et Status.io-API';
   }
   return /<(rss|feed|channel)[\s>]/i.test(body) ? null : 'Svaret er ikke et RSS/Atom-feed';
 }
